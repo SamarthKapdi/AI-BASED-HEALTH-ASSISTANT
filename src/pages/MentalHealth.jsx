@@ -1,30 +1,83 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Send, Smile, Wind } from 'lucide-react';
+import { Send, Wind, Loader2 } from 'lucide-react';
+import { chatWithAI } from '../services/gemini';
+import { saveChatMessage, getChatHistory } from '../services/chatService';
+import { useAuth } from '../contexts/AuthContext';
 
 const MentalHealth = () => {
     const [messages, setMessages] = useState([
-        { id: 1, text: "Hi there! I'm your supportive friend. How are you feeling right now? Stressed? Anxious? Or just need to chat?", sender: 'ai' }
+        { id: 1, text: "Hi there! I'm your supportive friend. How are you feeling right now? Stressed? Anxious? Or just need to chat?", sender: 'ai', createdAt: new Date().toISOString() }
     ]);
     const [input, setInput] = useState('');
     const [showBreathing, setShowBreathing] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+    const { currentUser } = useAuth();
+    const listRef = useRef(null);
 
-    const handleSend = (e) => {
+    useEffect(() => {
+        if (currentUser) {
+            loadHistory();
+        }
+    }, [currentUser]);
+
+    useEffect(() => {
+        if (listRef.current) {
+            listRef.current.scrollTop = listRef.current.scrollHeight;
+        }
+    }, [messages]);
+
+    const loadHistory = async () => {
+        try {
+            setError('');
+            const chats = await getChatHistory(currentUser.uid, 'mental');
+            if (chats.length) {
+                setMessages(chats.map(c => ({
+                    id: c.id,
+                    text: c.message || c.content,
+                    sender: c.role === 'assistant' ? 'ai' : 'user',
+                    createdAt: c.createdAt || c.timestamp
+                })));
+            }
+        } catch (err) {
+            console.error('Mental health history load error', err);
+            setError('Could not load past chats.');
+        }
+    };
+
+    const supportiveSystemContext = `You are a compassionate mental health support bot. Be brief, warm, non-judgmental, and avoid medical diagnoses. Offer grounding or breathing tips when appropriate. Keep responses under 70 words.`;
+
+    const handleSend = async (e) => {
         e.preventDefault();
-        if (!input.trim()) return;
+        if (!input.trim() || loading) return;
 
-        const newMsg = { id: Date.now(), text: input, sender: 'user' };
-        setMessages(prev => [...prev, newMsg]);
+        const userMsg = { id: Date.now(), text: input.trim(), sender: 'user', createdAt: new Date().toISOString() };
+        setMessages(prev => [...prev, userMsg]);
         setInput('');
+        setLoading(true);
+        setError('');
 
-        // Mock AI Response
-        setTimeout(() => {
-            setMessages(prev => [...prev, {
-                id: Date.now() + 1,
-                text: "I hear you. It's completely okay to feel that way. Have you tried taking a moment to just breathe?",
-                sender: 'ai'
-            }]);
-        }, 1500);
+        try {
+            if (currentUser) {
+                await saveChatMessage(currentUser.uid, userMsg.text, 'user', 'mental');
+            }
+
+            const historyForAI = messages.map(m => ({ role: m.sender === 'ai' ? 'assistant' : 'user', content: m.text }));
+            const aiText = await chatWithAI(`${supportiveSystemContext}\nUser: ${userMsg.text}`, historyForAI);
+
+            const aiMsg = { id: Date.now() + 1, text: aiText, sender: 'ai', createdAt: new Date().toISOString() };
+            setMessages(prev => [...prev, aiMsg]);
+
+            if (currentUser) {
+                await saveChatMessage(currentUser.uid, aiMsg.text, 'assistant', 'mental');
+            }
+        } catch (err) {
+            console.error('Mental health chat error', err);
+            setError(err?.message || 'Failed to get response.');
+        } finally {
+            setLoading(false);
+        }
     };
 
     return (
@@ -39,7 +92,16 @@ const MentalHealth = () => {
             {showBreathing && <BreathingExercise onClose={() => setShowBreathing(false)} />}
 
             <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 0 }}>
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {error && (
+                    <div style={{
+                        background: '#fef2f2', border: '1px solid #fecdd3', color: '#991b1b',
+                        padding: '10px 12px', margin: '10px', borderRadius: '10px', fontSize: '0.9rem'
+                    }}>
+                        {error}
+                    </div>
+                )}
+
+                <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                     {messages.map(msg => (
                         <div key={msg.id} style={{
                             alignSelf: msg.sender === 'user' ? 'flex-end' : 'flex-start',
@@ -54,6 +116,12 @@ const MentalHealth = () => {
                             {msg.text}
                         </div>
                     ))}
+                    {loading && (
+                        <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)' }}>
+                            <Loader2 size={18} className="spin" />
+                            <span>Thinking...</span>
+                        </div>
+                    )}
                 </div>
 
                 <form onSubmit={handleSend} style={{ padding: '1rem', background: 'white', borderTop: '1px solid #e2e8f0', display: 'flex', gap: '0.5rem' }}>

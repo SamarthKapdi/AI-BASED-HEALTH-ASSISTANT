@@ -3,40 +3,69 @@ import { useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { AlertTriangle, CheckCircle, Info, Volume2 } from 'lucide-react';
 import useVoice from '../hooks/useVoice';
+import { analyzeSymptoms } from '../services/gemini';
+import { saveSymptomAnalysis } from '../services/chatService';
+import { useAuth } from '../contexts/AuthContext';
 
 const SymptomAnalyzer = () => {
     const [searchParams] = useSearchParams();
     const query = searchParams.get('q');
     const [analyzing, setAnalyzing] = useState(true);
     const [result, setResult] = useState(null);
+    const [error, setError] = useState(null);
     const { speak } = useVoice();
+    const { currentUser } = useAuth();
 
     useEffect(() => {
         if (query) {
-            // Simulate AI analysis
-            const timer = setTimeout(() => {
-                setAnalyzing(false);
-                // Mock result logic
-                const lowerQ = query.toLowerCase();
-                let risk = 'Low';
-                if (lowerQ.includes('chest') || lowerQ.includes('pain') || lowerQ.includes('breath')) risk = 'High';
-                else if (lowerQ.includes('fever') && lowerQ.includes('high')) risk = 'Medium';
-
-                setResult({
-                    risk,
-                    advice: risk === 'High' ? "Please visit a doctor immediately. This could be serious." :
-                        risk === 'Medium' ? "Monitor your symptoms closely. Hydrate and rest." :
-                            "Likely a minor issue. Get some rest.",
-                    conditions: ["Common Cold", "Flu", "Fatigue"] // Mock
-                });
-            }, 2000);
-            return () => clearTimeout(timer);
+            analyzeUserSymptoms();
         } else {
             setAnalyzing(false);
         }
     }, [query]);
 
-    if (!query) return <div className="container" style={{ paddingTop: '6rem' }}>Please enter symptoms on the home page.</div>;
+    const analyzeUserSymptoms = async () => {
+        try {
+            setAnalyzing(true);
+            setError(null);
+            
+            // Call Gemini AI to analyze symptoms
+            const analysis = await analyzeSymptoms(query);
+            
+            setResult({
+                risk: analysis.riskLevel,
+                advice: analysis.advice,
+                urgency: analysis.urgency,
+                conditions: analysis.conditions || []
+            });
+
+            // Save to Firestore if user is logged in
+            if (currentUser) {
+                await saveSymptomAnalysis(currentUser.uid, query, analysis);
+            }
+        } catch (err) {
+            console.error('Error analyzing symptoms:', err);
+            const msg = err?.message || 'Failed to analyze symptoms. Please check if Gemini API key is configured.';
+            setError(msg);
+            
+            // Fallback to mock data
+            const lowerQ = query.toLowerCase();
+            let risk = 'Low';
+            if (lowerQ.includes('chest') || lowerQ.includes('pain') || lowerQ.includes('breath')) risk = 'High';
+            else if (lowerQ.includes('fever') && lowerQ.includes('high')) risk = 'Medium';
+
+            setResult({
+                risk,
+                advice: risk === 'High' ? "Please visit a doctor immediately. This could be serious." :
+                    risk === 'Medium' ? "Monitor your symptoms closely. Hydrate and rest." :
+                        "Likely a minor issue. Get some rest.",
+                conditions: ["Common Cold", "Flu", "Fatigue"],
+                urgency: "Consult a healthcare professional"
+            });
+        } finally {
+            setAnalyzing(false);
+        }
+    };
 
     return (
         <div className="container" style={{ paddingTop: '8rem', paddingBottom: '4rem' }}>
@@ -49,6 +78,19 @@ const SymptomAnalyzer = () => {
                 <h2 style={{ marginBottom: '1.5rem' }}>Symptom Analysis</h2>
                 <p style={{ fontSize: '1.1rem', marginBottom: '2rem' }}>Symptoms: <strong>{query}</strong></p>
 
+                {error && (
+                    <div style={{
+                        background: '#fef2f2',
+                        border: '1px solid #ef4444',
+                        borderRadius: '8px',
+                        padding: '12px',
+                        marginBottom: '1.5rem',
+                        color: '#991b1b'
+                    }}>
+                        {error}
+                    </div>
+                )}
+
                 {analyzing ? (
                     <div style={{ textAlign: 'center', padding: '3rem' }}>
                         <div className="spinner" style={{
@@ -56,10 +98,10 @@ const SymptomAnalyzer = () => {
                             borderTopColor: 'var(--primary)', borderRadius: '50%', margin: '0 auto 1rem',
                             animation: 'spin 1s linear infinite'
                         }}></div>
-                        <p>Consulting AI Health Database...</p>
+                        <p>Analyzing with AI...</p>
                         <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
                     </div>
-                ) : (
+                ) : result && (
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                         <div style={{
                             padding: '1.5rem',
